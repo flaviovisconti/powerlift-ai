@@ -6,27 +6,28 @@ export default function WorkoutCanvas() {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  // STATO PER LA UI
-  const [displayCounter, setDisplayCounter] = useState(0);
-  const [displayAngle, setDisplayAngle] = useState(0);
-  const [status, setStatus] = useState("IN ATTESA");
+  // UI STATE
+  const [counter, setCounter] = useState(0);
+  const [angle, setAngle] = useState(0);
+  const [isParallel, setIsParallel] = useState(false);
+  const [status, setStatus] = useState("READY");
 
-  // RIFERIMENTI PER LA LOGICA (Evitano doppi conteggi e crash)
+  // LOGIC REFS (Per evitare crash Wasm e lag)
   const counterRef = useRef(0);
   const stageRef = useRef("up");
+  const pathRef = useRef<{x: number, y: number}[]>([]); // Memorizza la traiettoria
 
   const calculateAngle = (A: any, B: any, C: any) => {
     const radians = Math.atan2(C.y - B.y, C.x - B.x) - Math.atan2(A.y - B.y, A.x - B.x);
-    let angle = Math.abs((radians * 180.0) / Math.PI);
-    if (angle > 180.0) angle = 360 - angle;
-    return Math.round(angle);
+    let angleDeg = Math.abs((radians * 180.0) / Math.PI);
+    if (angleDeg > 180.0) angleDeg = 360 - angleDeg;
+    return Math.round(angleDeg);
   };
 
   useEffect(() => {
     let pose: any = null;
 
     const initPose = async () => {
-      // Carichiamo lo script solo se non esiste
       if (!document.getElementById("mediapipe-pose-script")) {
         const script = document.createElement("script");
         script.id = "mediapipe-pose-script";
@@ -36,7 +37,7 @@ export default function WorkoutCanvas() {
         await new Promise((res) => (script.onload = res));
       }
 
-      // @ts-ignore - Usiamo un'istanza globale per evitare RuntimeError Wasm
+      // @ts-ignore
       if (!window.poseInstance) {
         // @ts-ignore
         window.poseInstance = new window.Pose({
@@ -72,50 +73,64 @@ export default function WorkoutCanvas() {
 
         if (results.poseLandmarks) {
           const landmarks = results.poseLandmarks;
+          
+          // Punti: Anca(23), Ginocchio(25), Caviglia(27), Polso(15 - Bar Path)
           const hip = landmarks[23];
           const knee = landmarks[25];
           const ankle = landmarks[27];
+          const wrist = landmarks[15];
 
           if (hip.visibility > 0.5 && knee.visibility > 0.5 && ankle.visibility > 0.5) {
             const currentAngle = calculateAngle(hip, knee, ankle);
-            setDisplayAngle(currentAngle);
+            setAngle(currentAngle);
 
-            // LOGICA SQUAT CORRETTO (Diventa verde sotto i 95 gradi)
-            const isSquatting = currentAngle < 95;
+            // 1. CHECK PROFONDITÀ (Powerlifting Standard)
+            // Nel web le Y aumentano verso il basso: se hip.y > knee.y sei "sotto il parallelo"
+            const deepEnough = hip.y > knee.y;
+            setIsParallel(deepEnough);
 
-            // Logica Conteggio
-            if (isSquatting && stageRef.current === "up") {
+            // 2. LOGICA CONTEGGIO
+            if (currentAngle < 100 && stageRef.current === "up") {
               stageRef.current = "down";
-              setStatus("SQUAT OK! SALI");
             }
-
             if (currentAngle > 160 && stageRef.current === "down") {
               stageRef.current = "up";
               counterRef.current += 1;
-              setDisplayCounter(counterRef.current);
-              setStatus("GRANDE! +1");
+              setCounter(counterRef.current);
+              pathRef.current = []; // Resetta il path per la prossima rep (opzionale)
             }
 
-            // DISEGNO DINAMICO
-            // Il colore cambia in base a quanto sei sceso
-            const color = isSquatting ? "#22C55E" : "#3B82F6"; // Verde se ok, Blu se alto
-            
-            canvasCtx.strokeStyle = color;
-            canvasCtx.lineWidth = 8;
-            canvasCtx.lineCap = "round";
+            // 3. BAR PATH TRACKING
+            if (wrist.visibility > 0.5) {
+              pathRef.current.push({
+                x: wrist.x * canvasElement.width,
+                y: wrist.y * canvasElement.height
+              });
+              // Teniamo solo gli ultimi 100 punti per non appesantire
+              if (pathRef.current.length > 100) pathRef.current.shift();
+            }
+
+            // --- DISEGNO ---
+            // Disegna Bar Path (Linea Gialla)
+            if (pathRef.current.length > 2) {
+              canvasCtx.beginPath();
+              canvasCtx.strokeStyle = "#FFFF00";
+              canvasCtx.lineWidth = 3;
+              canvasCtx.setLineDash([5, 5]); // Linea tratteggiata
+              canvasCtx.moveTo(pathRef.current[0].x, pathRef.current[0].y);
+              pathRef.current.forEach(p => canvasCtx.lineTo(p.x, p.y));
+              canvasCtx.stroke();
+              canvasCtx.setLineDash([]); // Reset tratteggio
+            }
+
+            // Disegna Scheletro (Verde se valido, Rosso se alto)
+            canvasCtx.strokeStyle = deepEnough ? "#22C55E" : "#EF4444";
+            canvasCtx.lineWidth = 6;
             canvasCtx.beginPath();
             canvasCtx.moveTo(hip.x * canvasElement.width, hip.y * canvasElement.height);
             canvasCtx.lineTo(knee.x * canvasElement.width, knee.y * canvasElement.height);
             canvasCtx.lineTo(ankle.x * canvasElement.width, ankle.y * canvasElement.height);
             canvasCtx.stroke();
-
-            // Puntini sulle articolazioni
-            [hip, knee, ankle].forEach(pt => {
-              canvasCtx.beginPath();
-              canvasCtx.arc(pt.x * canvasElement.width, pt.y * canvasElement.height, 6, 0, 2*Math.PI);
-              canvasCtx.fillStyle = "white";
-              canvasCtx.fill();
-            });
           }
         }
         canvasCtx.restore();
@@ -135,43 +150,43 @@ export default function WorkoutCanvas() {
   }, []);
 
   return (
-    <div className="flex flex-col items-center gap-6 p-8 bg-slate-900 rounded-[3rem] shadow-2xl border-4 border-slate-800">
-      {/* HEADER: Reps e Gradi */}
-      <div className="flex gap-16 text-white text-center">
-        <div>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Ripetizioni</p>
-          <p className="text-8xl font-black text-green-400 drop-shadow-[0_0_15px_rgba(74,222,128,0.3)]">{displayCounter}</p>
+    <div className="flex flex-col items-center gap-6 p-6 bg-black rounded-[2.5rem] border-2 border-slate-800 shadow-2xl">
+      {/* POWERLIFTING DASHBOARD */}
+      <div className="grid grid-cols-3 gap-8 w-full px-4 py-2">
+        <div className="text-center">
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Repetitions</p>
+          <p className="text-6xl font-black text-white">{counter}</p>
         </div>
-        <div className="border-l border-slate-800 pl-16">
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Angolo</p>
-          <p className={`text-8xl font-black transition-colors ${displayAngle < 95 ? 'text-green-400' : 'text-white'}`}>
-            {displayAngle}°
+        <div className="text-center border-x border-slate-800">
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Knee Angle</p>
+          <p className={`text-6xl font-black ${isParallel ? 'text-green-500' : 'text-red-500'}`}>{angle}°</p>
+        </div>
+        <div className="text-center">
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Depth</p>
+          <p className={`text-2xl mt-4 font-bold ${isParallel ? 'text-green-500' : 'text-slate-700'}`}>
+            {isParallel ? "GOOD" : "LOW DEPTH"}
           </p>
         </div>
       </div>
       
-      {/* VIDEO E CANVAS */}
-      <div className="relative rounded-3xl overflow-hidden border-8 border-slate-950 bg-black shadow-inner">
-        <Webcam 
-          ref={webcamRef} 
-          mirrored={false} 
-          className="w-full max-w-[640px] h-auto opacity-60" 
-        />
+      {/* CAMERA VIEW */}
+      <div className="relative rounded-3xl overflow-hidden border-4 border-slate-900 bg-slate-950 shadow-2xl">
+        <Webcam ref={webcamRef} mirrored={false} className="w-full max-w-[640px] opacity-60" />
         <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
         
-        {/* Badge Stato */}
-        <div className={`absolute top-6 left-6 px-6 py-2 rounded-full font-black text-white shadow-xl transition-all duration-300 ${displayAngle < 95 ? "bg-green-500 scale-110" : "bg-blue-600"}`}>
-          {status}
+        {/* Trajectory Label */}
+        <div className="absolute bottom-4 right-4 bg-yellow-500/20 border border-yellow-500/50 px-3 py-1 rounded text-[10px] text-yellow-500 font-bold uppercase">
+          Bar Path Active
         </div>
       </div>
 
-      {/* FOOTER: Controlli */}
-      <div className="flex gap-4 w-full">
+      {/* CONTROLS */}
+      <div className="flex gap-4 w-full px-4">
         <button 
-          onClick={() => { counterRef.current = 0; setDisplayCounter(0); }}
-          className="flex-1 py-4 bg-slate-800 hover:bg-red-900/40 text-slate-400 hover:text-red-400 font-bold rounded-2xl transition-all uppercase tracking-widest text-sm border border-slate-700"
+          onClick={() => { counterRef.current = 0; setCounter(0); pathRef.current = []; }}
+          className="flex-1 py-4 bg-slate-900 text-slate-400 text-xs font-black rounded-2xl border border-slate-800 hover:bg-red-950/20 hover:text-red-500 transition-all uppercase tracking-widest"
         >
-          Reset Sessione
+          Reset Session
         </button>
       </div>
     </div>
