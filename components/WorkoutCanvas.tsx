@@ -2,7 +2,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import Webcam from 'react-webcam';
 
-// Tipo per i dettagli del fallimento
 interface FailDetail {
   image: string;
   repNumber: number;
@@ -12,16 +11,14 @@ export default function WorkoutCanvas() {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  // UI STATE
   const [counter, setCounter] = useState(0);
   const [angle, setAngle] = useState(0);
   const [isParallel, setIsParallel] = useState(false);
   const [velocity, setVelocity] = useState(0);
   const [failScreenshots, setFailScreenshots] = useState<FailDetail[]>([]);
   const [status, setStatus] = useState("READY");
-  const [selectedImage, setSelectedImage] = useState<FailDetail | null>(null); // Per l'ingrandimento
+  const [selectedImage, setSelectedImage] = useState<FailDetail | null>(null);
 
-  // LOGIC REFS
   const counterRef = useRef(0);
   const stageRef = useRef("up");
   const pathRef = useRef<{x: number, y: number, t: number}[]>([]);
@@ -30,6 +27,38 @@ export default function WorkoutCanvas() {
   const reachedParallelRef = useRef(false);
   const bottomFrameRef = useRef<string | null>(null);
   const maxHipYRef = useRef<number>(0);
+
+  // --- FUNZIONE PER SALVARE I FILE ---
+  const saveFailuresToDisk = () => {
+    failScreenshots.forEach((fail) => {
+      const link = document.createElement("a");
+      link.href = fail.image;
+      // Nome file richiesto: "Rep X - No Parallel"
+      link.download = `Rep ${fail.repNumber} - No Parallel.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+  };
+
+  // --- LOGICA DI RESET CON CONFERMA ---
+  const handleReset = () => {
+    if (failScreenshots.length > 0) {
+      const confirmSave = window.confirm(
+        `Hai ${failScreenshots.length} errori registrati. Vuoi scaricarli sul tuo dispositivo prima di resettare?`
+      );
+      if (confirmSave) {
+        saveFailuresToDisk();
+      }
+    }
+    
+    // Reset effettivo degli stati
+    counterRef.current = 0;
+    setCounter(0);
+    setFailScreenshots([]);
+    setVelocity(0);
+    setStatus("SESSION RESET");
+  };
 
   const calculateAngle = (A: any, B: any, C: any) => {
     const radians = Math.atan2(C.y - B.y, C.x - B.x) - Math.atan2(A.y - B.y, A.x - B.x);
@@ -40,7 +69,6 @@ export default function WorkoutCanvas() {
 
   useEffect(() => {
     let pose: any = null;
-
     const initPose = async () => {
       if (!document.getElementById("mediapipe-pose-script")) {
         const script = document.createElement("script");
@@ -50,7 +78,6 @@ export default function WorkoutCanvas() {
         document.body.appendChild(script);
         await new Promise((res) => (script.onload = res));
       }
-
       // @ts-ignore
       if (!window.poseInstance) {
         // @ts-ignore
@@ -65,26 +92,20 @@ export default function WorkoutCanvas() {
           minTrackingConfidence: 0.5,
         });
       }
-
       // @ts-ignore
       pose = window.poseInstance;
-
       pose.onResults((results: any) => {
         if (!canvasRef.current || !webcamRef.current?.video) return;
-        
         const video = webcamRef.current.video;
         const canvasElement = canvasRef.current;
         const canvasCtx = canvasElement.getContext("2d");
-        
         if (canvasElement.width !== video.videoWidth) {
           canvasElement.width = video.videoWidth;
           canvasElement.height = video.videoHeight;
         }
-
         if (!canvasCtx) return;
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
         canvasCtx.globalAlpha = 0.6;
         canvasCtx.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
         canvasCtx.globalAlpha = 1.0;
@@ -114,12 +135,10 @@ export default function WorkoutCanvas() {
 
             if (stageRef.current === "down") {
               if (deepEnoughNow) reachedParallelRef.current = true;
-              
               if (hip.y > maxHipYRef.current) {
                 maxHipYRef.current = hip.y;
                 bottomFrameRef.current = canvasElement.toDataURL("image/png");
               }
-
               if (wrist.y > lowestYRef.current) {
                 lowestYRef.current = wrist.y;
                 startTimeRef.current = Date.now();
@@ -141,16 +160,15 @@ export default function WorkoutCanvas() {
                 if (bottomFrameRef.current) {
                   const newFail: FailDetail = {
                     image: bottomFrameRef.current,
-                    repNumber: counterRef.current + 1 // Segnamo quale rep è fallita
+                    repNumber: counterRef.current + 1
                   };
-                  setFailScreenshots(prev => [newFail, ...prev].slice(0, 6));
+                  setFailScreenshots(prev => [newFail, ...prev].slice(0, 10));
                 }
               }
               stageRef.current = "up";
               pathRef.current = [];
             }
 
-            // Path & Drawing
             if (wrist.visibility > 0.5) {
               pathRef.current.push({ x: wrist.x * canvasElement.width, y: wrist.y * canvasElement.height, t: Date.now() });
               if (pathRef.current.length > 50) pathRef.current.shift();
@@ -187,25 +205,20 @@ export default function WorkoutCanvas() {
       };
       sendFrame();
     };
-
     initPose();
   }, []);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 p-6 bg-slate-950 min-h-screen text-white font-sans">
+    <div className="flex flex-col lg:flex-row gap-6 p-6 bg-slate-950 min-h-screen text-white">
       
-      {/* MODAL PER INGRANDIMENTO */}
+      {/* MODAL INGRANDIMENTO */}
       {selectedImage && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 cursor-zoom-out"
-          onClick={() => setSelectedImage(null)}
-        >
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={() => setSelectedImage(null)}>
           <div className="relative max-w-5xl w-full">
             <img src={selectedImage.image} className="w-full rounded-3xl border-4 border-red-600 shadow-2xl" />
-            <div className="absolute top-4 left-4 bg-red-600 px-6 py-2 rounded-full font-black uppercase">
-              REP {selectedImage.repNumber} - NO DEPTH
+            <div className="absolute top-4 left-4 bg-red-600 px-6 py-2 rounded-full font-black">
+              REP {selectedImage.repNumber} - NO PARALLEL
             </div>
-            <p className="mt-4 text-center text-slate-400 font-bold">Clicca ovunque per chiudere</p>
           </div>
         </div>
       )}
@@ -232,44 +245,35 @@ export default function WorkoutCanvas() {
           </div>
         </div>
 
-        <div className="relative rounded-[2.5rem] overflow-hidden border-4 border-slate-800 bg-black shadow-2xl group">
-          <Webcam ref={webcamRef} mirrored={false} className="w-full max-w-[720px] transition-opacity opacity-70 group-hover:opacity-100 duration-700" />
+        <div className="relative rounded-[2.5rem] overflow-hidden border-4 border-slate-800 bg-black shadow-2xl">
+          <Webcam ref={webcamRef} mirrored={false} className="w-full max-w-[720px] opacity-70" />
           <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full" />
           <div className={`absolute top-6 left-6 px-6 py-2 rounded-2xl font-black text-white shadow-2xl backdrop-blur-md border border-white/10 ${status.includes("VALID") ? "bg-green-600/80" : "bg-slate-800/80"}`}>
             {status}
           </div>
         </div>
         
+        {/* PULSANTE RESET CON NUOVA LOGICA */}
         <button 
-          onClick={() => { counterRef.current = 0; setCounter(0); setFailScreenshots([]); setVelocity(0); }}
-          className="w-full max-w-[720px] py-4 bg-slate-900 hover:bg-red-950/30 text-slate-500 hover:text-red-500 font-bold rounded-2xl border border-slate-800 transition-all uppercase text-xs tracking-[0.2em]"
+          onClick={handleReset}
+          className="w-full max-w-[720px] py-4 bg-slate-900 hover:bg-red-950/30 text-slate-400 hover:text-red-500 font-bold rounded-2xl border border-slate-800 transition-all uppercase text-xs tracking-[0.2em]"
         >
-          Reset Session
+          Reset & Salva Sessione
         </button>
       </div>
 
-      {/* ANALISI ERRORI LATERALE */}
+      {/* REPLAY ERRORI */}
       <div className="w-full lg:w-80 flex flex-col gap-4">
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-2">Bottom Replays</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-2">Analisi Errori</h3>
         <div className="grid grid-cols-1 gap-4 overflow-y-auto max-h-[70vh] pr-2 custom-scrollbar">
-          {failScreenshots.length === 0 ? (
-            <div className="h-32 rounded-[2rem] border-2 border-dashed border-slate-800 flex items-center justify-center text-slate-700 text-[10px] uppercase font-bold text-center p-6">
-              Nessun fallimento rilevato
-            </div>
-          ) : (
-            failScreenshots.map((fail, i) => (
-              <div 
-                key={i} 
-                onClick={() => setSelectedImage(fail)}
-                className="relative rounded-[1.5rem] overflow-hidden border-2 border-red-900/30 bg-slate-900 cursor-zoom-in hover:border-red-600 transition-all group"
-              >
-                <img src={fail.image} alt="Errore" className="w-full opacity-80 group-hover:opacity-100 transition-opacity" />
-                <div className="absolute bottom-0 left-0 right-0 bg-red-600/90 p-2 text-[10px] font-black text-center text-white">
-                  REP {fail.repNumber} - NO PARALLEL
-                </div>
+          {failScreenshots.map((fail, i) => (
+            <div key={i} onClick={() => setSelectedImage(fail)} className="relative rounded-[1.5rem] overflow-hidden border-2 border-red-900/30 bg-slate-900 cursor-zoom-in hover:border-red-600 transition-all">
+              <img src={fail.image} className="w-full opacity-80" />
+              <div className="absolute bottom-0 left-0 right-0 bg-red-600/90 p-2 text-[10px] font-black text-center text-white">
+                REP {fail.repNumber} - NO PARALLEL
               </div>
-            ))
-          )}
+            </div>
+          ))}
         </div>
       </div>
     </div>
