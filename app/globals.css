@@ -1,10 +1,12 @@
 @import "tailwindcss";
 
+/* Definiamo i colori del tema Dark della palestra */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #020617; /* Slate 950 */
+  --foreground: #f8fafc; /* Slate 50 */
 }
 
+/* Configuriamo il tema per Tailwind v4 */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -12,15 +14,27 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Layout di base */
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  /* Creiamo un gradiente leggero per dare profondità */
+  background-image: radial-gradient(circle at top right, #0f172a, #020617);
+  min-height: 100vh;
+  margin: 0;
+  font-family: var(--font-sans), ui-sans-serif, system-ui;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Custom scrollbar per la cronologia errori laterale */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
 }
