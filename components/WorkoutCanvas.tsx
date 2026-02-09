@@ -2,62 +2,53 @@
 import React, { useRef, useEffect, useState } from 'react';
 import Webcam from 'react-webcam';
 
-interface FailDetail {
-  image: string;
-  repNumber: number;
-}
+interface FailDetail { image: string; repNumber: number; exercise: string; }
+interface RepData { repNumber: number; peakVelocity: number; fatigue: number; }
+type Exercise = 'SQUAT' | 'DEADLIFT';
 
 export default function WorkoutCanvas() {
   const webcamRef = useRef<Webcam>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  const [exercise, setExercise] = useState<Exercise>('SQUAT');
+  const [sourceMode, setSourceMode] = useState<'WEBCAM' | 'UPLOAD'>('WEBCAM');
+  const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const [videoKey, setVideoKey] = useState(0);
+  const [isVideoEnded, setIsVideoEnded] = useState(false);
   
   const [counter, setCounter] = useState(0);
   const [angle, setAngle] = useState(0);
-  const [isParallel, setIsParallel] = useState(false);
   const [velocity, setVelocity] = useState(0);
+  const [repHistory, setRepHistory] = useState<RepData[]>([]);
+  const [status, setStatus] = useState("PRONTO");
   const [failScreenshots, setFailScreenshots] = useState<FailDetail[]>([]);
-  const [status, setStatus] = useState("READY");
   const [selectedImage, setSelectedImage] = useState<FailDetail | null>(null);
 
   const counterRef = useRef(0);
-  const stageRef = useRef("up");
-  const pathRef = useRef<{x: number, y: number, t: number}[]>([]);
-  const startTimeRef = useRef<number>(0);
-  const lowestYRef = useRef<number>(0);
-  const reachedParallelRef = useRef(false);
-  const bottomFrameRef = useRef<string | null>(null);
-  const maxHipYRef = useRef<number>(0);
+  const stageRef = useRef<"up" | "down">("up");
+  const hasReachedDepth = useRef(false);
+  const pathRef = useRef<{x: number, y: number}[]>([]);
+  const lastPathsRef = useRef<{x: number, y: number}[][]>([]);
+  const prevBarRef = useRef({ x: 0, y: 0, t: 0 });
+  const currentMaxVelRef = useRef(0);
 
-  // --- FUNZIONE PER SALVARE I FILE ---
-  const saveFailuresToDisk = () => {
-    failScreenshots.forEach((fail) => {
-      const link = document.createElement("a");
-      link.href = fail.image;
-      // Nome file richiesto: "Rep X - No Parallel"
-      link.download = `Rep ${fail.repNumber} - No Parallel.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    });
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setVideoSrc(url);
+      setSourceMode('UPLOAD');
+      setIsVideoEnded(false);
+      setVideoKey(prev => prev + 1);
+      handleReset();
+    }
   };
 
-  // --- LOGICA DI RESET CON CONFERMA ---
-  const handleReset = () => {
-    if (failScreenshots.length > 0) {
-      const confirmSave = window.confirm(
-        `Hai ${failScreenshots.length} errori registrati. Vuoi scaricarli sul tuo dispositivo prima di resettare?`
-      );
-      if (confirmSave) {
-        saveFailuresToDisk();
-      }
-    }
-    
-    // Reset effettivo degli stati
-    counterRef.current = 0;
-    setCounter(0);
-    setFailScreenshots([]);
-    setVelocity(0);
-    setStatus("SESSION RESET");
+  const handleReplay = () => {
+    handleReset();
+    setIsVideoEnded(false);
+    setVideoKey(prev => prev + 1);
   };
 
   const calculateAngle = (A: any, B: any, C: any) => {
@@ -68,7 +59,9 @@ export default function WorkoutCanvas() {
   };
 
   useEffect(() => {
+    let isActive = true;
     let pose: any = null;
+
     const initPose = async () => {
       if (!document.getElementById("mediapipe-pose-script")) {
         const script = document.createElement("script");
@@ -78,6 +71,7 @@ export default function WorkoutCanvas() {
         document.body.appendChild(script);
         await new Promise((res) => (script.onload = res));
       }
+
       // @ts-ignore
       if (!window.poseInstance) {
         // @ts-ignore
@@ -86,196 +80,300 @@ export default function WorkoutCanvas() {
         });
         // @ts-ignore
         window.poseInstance.setOptions({
-          modelComplexity: 1,
+          modelComplexity: 2, 
           smoothLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5,
+          minDetectionConfidence: 0.6,
+          minTrackingConfidence: 0.6,
         });
       }
+
       // @ts-ignore
       pose = window.poseInstance;
       pose.onResults((results: any) => {
-        if (!canvasRef.current || !webcamRef.current?.video) return;
-        const video = webcamRef.current.video;
+        if (!isActive || !canvasRef.current) return;
         const canvasElement = canvasRef.current;
         const canvasCtx = canvasElement.getContext("2d");
-        if (canvasElement.width !== video.videoWidth) {
-          canvasElement.width = video.videoWidth;
-          canvasElement.height = video.videoHeight;
+        const sourceElement = sourceMode === 'WEBCAM' ? webcamRef.current?.video : videoRef.current;
+        
+        if (!sourceElement || !canvasCtx || sourceElement.readyState < 2) return;
+
+        if (canvasElement.width !== sourceElement.videoWidth) {
+          canvasElement.width = sourceElement.videoWidth;
+          canvasElement.height = sourceElement.videoHeight;
         }
-        if (!canvasCtx) return;
+
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-        canvasCtx.globalAlpha = 0.6;
-        canvasCtx.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
-        canvasCtx.globalAlpha = 1.0;
+        canvasCtx.drawImage(sourceElement, 0, 0, canvasElement.width, canvasElement.height);
 
         if (results.poseLandmarks) {
-          const landmarks = results.poseLandmarks;
-          const hip = landmarks[23];
-          const knee = landmarks[25];
-          const ankle = landmarks[27];
-          const wrist = landmarks[15];
+          const l = results.poseLandmarks;
+          const isLeft = l[11].visibility > l[12].visibility;
+          const side = isLeft ? 
+            {s: l[11], h: l[23], k: l[25], a: l[27], w: l[15], e: l[13]} : 
+            {s: l[12], h: l[24], k: l[26], a: l[28], w: l[16], e: l[14]};
 
-          if (hip.visibility > 0.5 && knee.visibility > 0.5 && ankle.visibility > 0.5) {
-            const currentAngle = calculateAngle(hip, knee, ankle);
-            setAngle(currentAngle);
-            const deepEnoughNow = hip.y > knee.y;
-            setIsParallel(deepEnoughNow);
+          const now = Date.now();
+          let rawX, rawY;
+          if (exercise === 'SQUAT') {
+            rawX = side.w.x * canvasElement.width;
+            rawY = side.s.y * canvasElement.height;
+          } else {
+            const vDirX = side.w.x - side.e.x;
+            const vDirY = side.w.y - side.e.y;
+            rawX = (side.w.x + vDirX * 0.35) * canvasElement.width;
+            rawY = (side.w.y + vDirY * 0.35) * canvasElement.height;
+          }
 
-            if (currentAngle < 100 && stageRef.current === "up") {
-              stageRef.current = "down";
-              reachedParallelRef.current = false;
-              maxHipYRef.current = 0;
-              bottomFrameRef.current = null;
-              lowestYRef.current = wrist.y;
-              startTimeRef.current = Date.now();
-              setStatus("ANALYZING DEPTH...");
-            }
+          const barX = prevBarRef.current.x === 0 ? rawX : prevBarRef.current.x * 0.2 + rawX * 0.8;
+          const barY = prevBarRef.current.y === 0 ? rawY : prevBarRef.current.y * 0.2 + rawY * 0.8;
 
-            if (stageRef.current === "down") {
-              if (deepEnoughNow) reachedParallelRef.current = true;
-              if (hip.y > maxHipYRef.current) {
-                maxHipYRef.current = hip.y;
-                bottomFrameRef.current = canvasElement.toDataURL("image/png");
-              }
-              if (wrist.y > lowestYRef.current) {
-                lowestYRef.current = wrist.y;
-                startTimeRef.current = Date.now();
-              }
-            }
-
-            if (currentAngle > 160 && stageRef.current === "down") {
-              const duration = (Date.now() - startTimeRef.current) / 1000;
-              const distance = Math.abs(wrist.y - lowestYRef.current);
-              const vbt = duration > 0 ? (distance / duration) * 10 : 0;
-              setVelocity(parseFloat(vbt.toFixed(2)));
-
-              if (reachedParallelRef.current) {
-                setCounter(c => c + 1);
-                counterRef.current += 1;
-                setStatus("VALID REP ⚪");
-              } else {
-                setStatus("NO LIFT 🔴");
-                if (bottomFrameRef.current) {
-                  const newFail: FailDetail = {
-                    image: bottomFrameRef.current,
-                    repNumber: counterRef.current + 1
-                  };
-                  setFailScreenshots(prev => [newFail, ...prev].slice(0, 10));
-                }
-              }
-              stageRef.current = "up";
-              pathRef.current = [];
-            }
-
-            if (wrist.visibility > 0.5) {
-              pathRef.current.push({ x: wrist.x * canvasElement.width, y: wrist.y * canvasElement.height, t: Date.now() });
-              if (pathRef.current.length > 50) pathRef.current.shift();
-            }
-
-            canvasCtx.strokeStyle = reachedParallelRef.current ? "#22C55E" : (stageRef.current === "down" ? "#3B82F6" : "#EF4444");
-            canvasCtx.lineWidth = 6;
-            canvasCtx.beginPath();
-            canvasCtx.moveTo(hip.x * canvasElement.width, hip.y * canvasElement.height);
-            canvasCtx.lineTo(knee.x * canvasElement.width, knee.y * canvasElement.height);
-            canvasCtx.lineTo(ankle.x * canvasElement.width, ankle.y * canvasElement.height);
-            canvasCtx.stroke();
-
-            if (pathRef.current.length > 2) {
-              canvasCtx.beginPath();
-              canvasCtx.strokeStyle = "#FFFF00";
-              canvasCtx.setLineDash([5, 5]);
-              canvasCtx.moveTo(pathRef.current[0].x, pathRef.current[0].y);
-              pathRef.current.forEach(p => canvasCtx.lineTo(p.x, p.y));
-              canvasCtx.stroke();
-              canvasCtx.setLineDash([]);
+          const pixelDist = Math.sqrt(Math.pow(side.h.x - side.s.x, 2) + Math.pow(side.h.y - side.s.y, 2)) * canvasElement.height;
+          const metersPerPixel = 0.5 / (pixelDist || 1);
+          
+          if (prevBarRef.current.t > 0) {
+            const dy = (barY - prevBarRef.current.y) * metersPerPixel;
+            const dt = (now - prevBarRef.current.t) / 1000;
+            const v = Math.abs(dy / dt);
+            if (v < 4) {
+              setVelocity(Number(v.toFixed(2)));
+              if (v > currentMaxVelRef.current) currentMaxVelRef.current = v;
             }
           }
+          prevBarRef.current = { x: barX, y: barY, t: now };
+
+          const curAngle = calculateAngle(side.h, side.k, side.a);
+          setAngle(curAngle);
+
+          let skeletonColor = "#6366f1"; 
+
+          if (side.h.visibility > 0.5) {
+            if (exercise === 'SQUAT') {
+              if (curAngle < 115) { 
+                if (stageRef.current === "up") {
+                  stageRef.current = "down";
+                  hasReachedDepth.current = false;
+                  currentMaxVelRef.current = 0;
+                  pathRef.current = [];
+                }
+                if (curAngle <= 90) hasReachedDepth.current = true;
+                skeletonColor = hasReachedDepth.current ? "#22c55e" : "#ef4444";
+                setStatus(hasReachedDepth.current ? "PROFONDITÀ OK" : "SCENDI...");
+              }
+              if (curAngle > 160 && stageRef.current === "down") {
+                stageRef.current = "up";
+                if (hasReachedDepth.current) {
+                  counterRef.current += 1;
+                  setCounter(counterRef.current);
+                  
+                  const peakV = Number(currentMaxVelRef.current.toFixed(2));
+                  setRepHistory(prev => {
+                    const firstVel = prev.length > 0 ? prev[0].peakVelocity : peakV;
+                    const fatigueLoss = prev.length > 0 ? Math.round((1 - peakV / firstVel) * 100) : 0;
+                    return [...prev, { repNumber: counterRef.current, peakVelocity: peakV, fatigue: fatigueLoss }];
+                  });
+                  setStatus("SQUAT VALIDO");
+                } else {
+                  setStatus("FAIL: NO DEPTH");
+                  const imageData = canvasElement.toDataURL("image/png");
+                  setFailScreenshots(prev => [...prev, { image: imageData, repNumber: counterRef.current + 1, exercise }]);
+                }
+                lastPathsRef.current.push([...pathRef.current]);
+              }
+              if (stageRef.current === "down") pathRef.current.push({x: barX, y: barY});
+            } else {
+              // DEADLIFT
+              const kneeY = side.k.y * canvasElement.height;
+              const ankleY = side.a.y * canvasElement.height;
+              if (barY < kneeY && stageRef.current === "up") {
+                stageRef.current = "down";
+                currentMaxVelRef.current = 0;
+                pathRef.current = [];
+              }
+              if (barY > ankleY - 30 && stageRef.current === "down") {
+                stageRef.current = "up";
+                counterRef.current += 1;
+                setCounter(counterRef.current);
+                const peakV = Number(currentMaxVelRef.current.toFixed(2));
+                setRepHistory(prev => {
+                  const firstVel = prev.length > 0 ? prev[0].peakVelocity : peakV;
+                  const fatigueLoss = prev.length > 0 ? Math.round((1 - peakV / firstVel) * 100) : 0;
+                  return [...prev, { repNumber: counterRef.current, peakVelocity: peakV, fatigue: fatigueLoss }];
+                });
+                lastPathsRef.current.push([...pathRef.current]);
+                setStatus("DEADLIFT OK");
+              }
+              if (stageRef.current === "down") {
+                pathRef.current.push({x: barX, y: barY});
+                skeletonColor = "#22c55e";
+              }
+            }
+          }
+
+          canvasCtx.lineWidth = 2;
+          canvasCtx.strokeStyle = "rgba(148, 163, 184, 0.3)";
+          lastPathsRef.current.forEach(p => {
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(p[0].x, p[0].y);
+            p.forEach(pt => canvasCtx.lineTo(pt.x, pt.y));
+            canvasCtx.stroke();
+          });
+          if (pathRef.current.length > 2) {
+            canvasCtx.strokeStyle = "#00FFFF";
+            canvasCtx.lineWidth = 5;
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(pathRef.current[0].x, pathRef.current[0].y);
+            pathRef.current.forEach(pt => canvasCtx.lineTo(pt.x, pt.y));
+            canvasCtx.stroke();
+          }
+          canvasCtx.strokeStyle = skeletonColor;
+          canvasCtx.lineWidth = 6;
+          canvasCtx.beginPath();
+          canvasCtx.moveTo(side.h.x * canvasElement.width, side.h.y * canvasElement.height);
+          canvasCtx.lineTo(side.k.x * canvasElement.width, side.k.y * canvasElement.height);
+          canvasCtx.lineTo(side.a.x * canvasElement.width, side.a.y * canvasElement.height);
+          canvasCtx.stroke();
         }
         canvasCtx.restore();
       });
 
       const sendFrame = async () => {
-        if (webcamRef.current?.video?.readyState === 4) {
+        if (!isActive) return;
+        const source = sourceMode === 'WEBCAM' ? webcamRef.current?.video : videoRef.current;
+        if (source && sourceMode === 'UPLOAD' && source.ended) { setIsVideoEnded(true); return; }
+        if (source && source.readyState >= 2) {
           // @ts-ignore
-          await pose.send({ image: webcamRef.current.video });
+          await pose.send({ image: source });
         }
         requestAnimationFrame(sendFrame);
       };
       sendFrame();
     };
     initPose();
-  }, []);
+    return () => { isActive = false; };
+  }, [exercise, sourceMode, videoSrc, videoKey]);
+
+  function handleReset() {
+    counterRef.current = 0;
+    setCounter(0);
+    setVelocity(0);
+    setRepHistory([]);
+    setFailScreenshots([]);
+    pathRef.current = [];
+    lastPathsRef.current = [];
+    stageRef.current = "up";
+    setStatus("PRONTO");
+  }
+
+  const generateChartPath = () => {
+    if (repHistory.length < 2) return "";
+    const width = 680; 
+    const height = 150;
+    const spacing = width / (repHistory.length - 1);
+    return repHistory.map((rep, i) => {
+      const x = i * spacing;
+      const y = height - Math.min((rep.peakVelocity / 1.5) * height, height);
+      return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+    }).join(" ");
+  };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 p-6 bg-slate-950 min-h-screen text-white">
-      
-      {/* MODAL INGRANDIMENTO */}
-      {selectedImage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={() => setSelectedImage(null)}>
-          <div className="relative max-w-5xl w-full">
-            <img src={selectedImage.image} className="w-full rounded-3xl border-4 border-red-600 shadow-2xl" />
-            <div className="absolute top-4 left-4 bg-red-600 px-6 py-2 rounded-full font-black">
-              REP {selectedImage.repNumber} - NO PARALLEL
-            </div>
+    <div className="flex flex-col lg:flex-row gap-6 p-6 bg-slate-950 min-h-screen text-white font-sans">
+      <div className="flex-1 flex flex-col items-center gap-6">
+        {/* SELETTORE ESERCIZIO */}
+        <div className="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800 w-full max-w-[720px]">
+          <button onClick={() => {setExercise('SQUAT'); handleReset();}} className={`flex-1 py-2.5 rounded-xl font-bold transition-all ${exercise === 'SQUAT' ? 'bg-indigo-600' : 'text-slate-500'}`}>SQUAT</button>
+          <button onClick={() => {setExercise('DEADLIFT'); handleReset();}} className={`flex-1 py-2.5 rounded-xl font-bold transition-all ${exercise === 'DEADLIFT' ? 'bg-indigo-600' : 'text-slate-500'}`}>DEADLIFT</button>
+        </div>
+
+        {/* DASHBOARD PRINCIPALE */}
+        <div className="grid grid-cols-4 gap-4 w-full max-w-[720px] bg-slate-900 p-6 rounded-[2rem] border border-slate-800 shadow-2xl relative">
+          <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-500"></div>
+          <div className="text-center"><p className="text-[10px] text-slate-500 uppercase font-black">Reps</p><p className="text-5xl font-black">{counter}</p></div>
+          <div className="text-center border-x border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-black">m/s</p><p className="text-5xl font-black text-green-400 tabular-nums">{velocity}</p></div>
+          <div className="text-center border-r border-slate-800">
+            <p className="text-[10px] text-slate-500 uppercase font-black">Loss %</p>
+            <p className={`text-5xl font-black tabular-nums ${repHistory.length > 0 && repHistory[repHistory.length-1].fatigue > 20 ? 'text-red-500' : 'text-white'}`}>
+              {repHistory.length > 0 ? repHistory[repHistory.length-1].fatigue : 0}%
+            </p>
           </div>
+          <div className="text-center"><p className="text-[10px] text-slate-500 uppercase font-black">Angle</p><p className="text-5xl font-black text-indigo-400 tabular-nums">{angle}°</p></div>
+        </div>
+
+        {/* MONITOR */}
+        <div className="relative rounded-[3rem] overflow-hidden border-4 border-slate-900 bg-black shadow-2xl">
+          {sourceMode === 'WEBCAM' ? (
+            <Webcam ref={webcamRef} mirrored={false} className="w-full max-w-[720px] h-auto opacity-90" />
+          ) : (
+            <video key={videoKey} ref={videoRef} src={videoSrc || ""} muted playsInline autoPlay className="w-full max-w-[720px] h-auto opacity-90" />
+          )}
+          <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
+          {isVideoEnded && sourceMode === 'UPLOAD' && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-md">
+              <button onClick={handleReplay} className="px-10 py-5 bg-indigo-600 text-white font-black rounded-3xl shadow-2xl uppercase tracking-widest">REPLAY</button>
+            </div>
+          )}
+        </div>
+
+        {/* GRAFICO VBT CON RETTA */}
+        <div className="w-full max-w-[720px] bg-slate-900 p-8 rounded-[2rem] border border-slate-800 shadow-xl overflow-hidden">
+          <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-indigo-400 mb-8 px-2">VBT Trend Line (m/s)</h4>
+          <div className="relative h-[150px] w-full px-4">
+            {repHistory.length < 2 ? (
+              <div className="absolute inset-0 flex items-center justify-center border border-dashed border-slate-700 rounded-2xl text-slate-600 text-[10px] font-bold uppercase tracking-widest">Dati insufficienti per la retta...</div>
+            ) : (
+              <svg className="w-full h-full overflow-visible" viewBox="0 0 680 150">
+                <path d={generateChartPath()} fill="none" stroke="#00FFFF" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="drop-shadow-[0_0_8px_rgba(0,255,255,0.5)]" />
+                {repHistory.map((rep, i) => {
+                  const spacing = 680 / (repHistory.length - 1);
+                  const x = i * spacing;
+                  const y = 150 - Math.min((rep.peakVelocity / 1.5) * 150, 150);
+                  return (
+                    <g key={i}>
+                      <circle cx={x} cy={y} r="6" fill="#00FFFF" />
+                      <text x={x} y={y - 15} textAnchor="middle" className="fill-green-400 text-[12px] font-black">{rep.peakVelocity}</text>
+                      <text x={x} y={170} textAnchor="middle" className="fill-slate-500 text-[10px] font-bold">R{rep.repNumber} ({rep.fatigue}%)</text>
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
+          </div>
+        </div>
+
+        {/* CONTROLLI INFERIORI */}
+        <div className="flex gap-4 w-full max-w-[720px]">
+          <button onClick={() => setSourceMode(prev => prev === 'WEBCAM' ? 'UPLOAD' : 'WEBCAM')} className="flex-1 py-4 bg-slate-900 text-slate-400 font-bold rounded-2xl border border-slate-800 text-xs tracking-widest uppercase hover:bg-slate-800 transition-all">FONTE</button>
+          {sourceMode === 'UPLOAD' && (
+            <label className="flex-1 py-4 bg-indigo-900/20 text-indigo-400 font-bold rounded-2xl border border-indigo-500/30 text-center cursor-pointer text-xs tracking-widest uppercase hover:bg-indigo-900/40 transition-all">CARICA FILE<input type="file" accept="video/*" onChange={handleFileUpload} className="hidden" /></label>
+          )}
+          <button onClick={handleReset} className="flex-1 py-4 bg-slate-900 text-red-500 font-bold rounded-2xl border border-slate-800 text-xs tracking-widest uppercase hover:bg-red-950/20 transition-all">RESET</button>
+        </div>
+      </div>
+
+      {/* ANOMALIES LOG */}
+      <div className="w-full lg:w-80 bg-slate-900/50 rounded-[2.5rem] border border-slate-800 p-6 flex flex-col gap-4 shadow-2xl overflow-hidden">
+        <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500 mb-2 px-2">Anomalies Log</h3>
+        <div className="flex flex-col gap-4 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
+          {failScreenshots.length === 0 ? <p className="text-[10px] text-slate-600 italic px-2">Tutto regolare.</p> : 
+            failScreenshots.map((fail, i) => (
+              <div key={i} onClick={() => setSelectedImage(fail)} className="group relative rounded-2xl overflow-hidden border-2 border-red-500/30 cursor-pointer hover:border-red-500 transition-all shadow-lg transform hover:-translate-y-1">
+                <img src={fail.image} className="w-full h-auto opacity-70 group-hover:opacity-100" />
+                <div className="absolute bottom-0 left-0 right-0 bg-red-600/90 py-1.5 px-3 text-[9px] font-black uppercase tracking-widest flex justify-between">
+                  <span>Rep #{fail.repNumber}</span>
+                  <span>{fail.exercise}</span>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+
+      {selectedImage && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-10" onClick={() => setSelectedImage(null)}>
+          <img src={selectedImage.image} className="max-w-full max-h-full rounded-[2.5rem] border-2 border-white/10 shadow-2xl" />
         </div>
       )}
-
-      {/* DASHBOARD PRINCIPALE */}
-      <div className="flex-1 flex flex-col items-center gap-6">
-        <div className="grid grid-cols-4 gap-4 w-full bg-slate-900 p-6 rounded-[2rem] border border-slate-800 shadow-xl">
-          <div className="text-center">
-            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-blue-400">Reps</p>
-            <p className="text-6xl font-black">{counter}</p>
-          </div>
-          <div className="text-center border-x border-slate-800">
-            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-blue-400">Velocity</p>
-            <p className="text-6xl font-black">{velocity}</p>
-          </div>
-          <div className="text-center border-r border-slate-800">
-            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-blue-400">Angle</p>
-            <p className="text-6xl font-black">{angle}°</p>
-          </div>
-          <div className="flex flex-col justify-center items-center">
-             <div className={`px-4 py-2 rounded-xl text-xs font-black tracking-widest ${isParallel ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'}`}>
-                {isParallel ? "DEPTH OK" : "LOW"}
-             </div>
-          </div>
-        </div>
-
-        <div className="relative rounded-[2.5rem] overflow-hidden border-4 border-slate-800 bg-black shadow-2xl">
-          <Webcam ref={webcamRef} mirrored={false} className="w-full max-w-[720px] opacity-70" />
-          <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full" />
-          <div className={`absolute top-6 left-6 px-6 py-2 rounded-2xl font-black text-white shadow-2xl backdrop-blur-md border border-white/10 ${status.includes("VALID") ? "bg-green-600/80" : "bg-slate-800/80"}`}>
-            {status}
-          </div>
-        </div>
-        
-        {/* PULSANTE RESET CON NUOVA LOGICA */}
-        <button 
-          onClick={handleReset}
-          className="w-full max-w-[720px] py-4 bg-slate-900 hover:bg-red-950/30 text-slate-400 hover:text-red-500 font-bold rounded-2xl border border-slate-800 transition-all uppercase text-xs tracking-[0.2em]"
-        >
-          Reset & Salva Sessione
-        </button>
-      </div>
-
-      {/* REPLAY ERRORI */}
-      <div className="w-full lg:w-80 flex flex-col gap-4">
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-2">Analisi Errori</h3>
-        <div className="grid grid-cols-1 gap-4 overflow-y-auto max-h-[70vh] pr-2 custom-scrollbar">
-          {failScreenshots.map((fail, i) => (
-            <div key={i} onClick={() => setSelectedImage(fail)} className="relative rounded-[1.5rem] overflow-hidden border-2 border-red-900/30 bg-slate-900 cursor-zoom-in hover:border-red-600 transition-all">
-              <img src={fail.image} className="w-full opacity-80" />
-              <div className="absolute bottom-0 left-0 right-0 bg-red-600/90 p-2 text-[10px] font-black text-center text-white">
-                REP {fail.repNumber} - NO PARALLEL
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
