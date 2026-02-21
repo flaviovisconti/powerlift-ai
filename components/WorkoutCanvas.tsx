@@ -217,11 +217,11 @@ function ProfileTab({ history }: { history: SavedSession[] }) {
       <div className="flex items-center gap-6 mb-10 bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-xl relative overflow-hidden">
         <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl"></div>
         <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-2xl font-black shadow-lg text-white z-10">
-          FV
+          USR
         </div>
         <div className="z-10">
           <p className="text-xs text-slate-500 font-black tracking-widest uppercase mb-1">Atleta VBT</p>
-          <p className="text-2xl font-black text-white">@flaviovisconti</p>
+          <p className="text-2xl font-black text-white">@user</p>
         </div>
       </div>
 
