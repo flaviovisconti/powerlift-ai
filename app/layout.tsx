@@ -1,20 +1,28 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
+const inter = Inter({ subsets: ["latin"] });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
+// Configurazione per trasformare il sito in una vera App (PWA)
 export const metadata: Metadata = {
-  title: "PowerLift AI | Smart Squat Analyzer",
-  description: "Analizzatore biomeccanico in tempo reale per Powerlifting e Bodybuilding",
+  title: "VBT Tracker AI",
+  description: "Smart Squat & VBT Analyzer con IA e Bluetooth",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "VBT Tracker",
+  },
+};
+
+// Blocca lo zoom accidentale quando tocchi i tasti velocemente
+export const viewport: Viewport = {
+  themeColor: "#0f172a",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({
@@ -23,12 +31,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+    <html lang="it">
+      <body className={inter.className}>{children}</body>
     </html>
   );
 }
