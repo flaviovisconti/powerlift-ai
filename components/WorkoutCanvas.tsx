@@ -20,29 +20,35 @@ export default function WorkoutCanvas() {
   // Stati UI Base
   const [counter, setCounter] = useState(0);
   const [angle, setAngle] = useState(0);
-  const [velocity, setVelocity] = useState(0); // Velocità da fotocamera
+  const [camVelocity, setCamVelocity] = useState(0); 
   const [repHistory, setRepHistory] = useState<RepData[]>([]);
   const [status, setStatus] = useState("PRONTO");
   const [failScreenshots, setFailScreenshots] = useState<FailDetail[]>([]);
   const [selectedImage, setSelectedImage] = useState<FailDetail | null>(null);
 
-  // --- STATI BLUETOOTH ---
+  // Stati BLUETOOTH
   const [isBleConnected, setIsBleConnected] = useState(false);
-  const [bleAccel, setBleAccel] = useState(0); // Accelerazione in tempo reale dal sensore
+  const [bleAccel, setBleAccel] = useState(0); 
+  const [bleVelocity, setBleVelocity] = useState(0); 
 
-  // Refs per calcoli fotocamera
+  // Refs per calcoli 
   const counterRef = useRef(0);
   const stageRef = useRef<"up" | "down">("up");
   const hasReachedDepth = useRef(false);
   const pathRef = useRef<{x: number, y: number}[]>([]);
   const prevBarRef = useRef({ x: 0, y: 0, t: 0 });
-  const currentMaxVelRef = useRef(0);
+  const currentMaxCamVelRef = useRef(0);
+  
+  // Refs per l'integrazione matematica del sensore
+  const lastBleTimeRef = useRef(0);
+  const bleVelocityRef = useRef(0);
+  const currentMaxBleVelRef = useRef(0);
 
   // --- LOGICA CONNESSIONE BLUETOOTH ---
   const connectBluetooth = async () => {
     try {
       setStatus("RICERCA DISPOSITIVO...");
-      // @ts-ignore - Web Bluetooth API
+      // @ts-ignore
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ name: 'VBT-Barbell' }],
         optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
@@ -52,14 +58,12 @@ export default function WorkoutCanvas() {
       const service = await server.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
       const characteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
 
-      // Resta in ascolto dei dati in arrivo
       characteristic.addEventListener('characteristicvaluechanged', handleBleData);
       await characteristic.startNotifications();
 
       setIsBleConnected(true);
       setStatus("✅ SENSORE CONNESSO");
       
-      // Gestione disconnessione
       device.addEventListener('gattserverdisconnected', () => {
         setIsBleConnected(false);
         setStatus("⚠️ SENSORE DISCONNESSO");
@@ -71,14 +75,42 @@ export default function WorkoutCanvas() {
     }
   };
 
-  // Callback che scatta ogni volta che l'ESP32 invia un numero
+  // --- INTEGRAZIONE MATEMATICA (Accelerazione -> Velocità) ---
   const handleBleData = (event: any) => {
     const value = new TextDecoder().decode(event.target.value);
     const rawAccel = parseFloat(value);
     setBleAccel(rawAccel);
     
-    // NOTA: Qui in futuro aggiungeremo la formula di integrazione per calcolare
-    // la velocità super precisa dall'accelerazione netta.
+    const now = Date.now();
+    if (lastBleTimeRef.current === 0) {
+      lastBleTimeRef.current = now;
+      return;
+    }
+    
+    const dt = (now - lastBleTimeRef.current) / 1000;
+    lastBleTimeRef.current = now;
+    
+    // Rimuove la gravità (9.81 m/s^2)
+    const netAccel = Math.abs(rawAccel) - 9.81; 
+    
+    // Filtro per micro-vibrazioni
+    if (Math.abs(netAccel) > 0.3) {
+      bleVelocityRef.current += netAccel * dt;
+      const currentV = Number(Math.abs(bleVelocityRef.current).toFixed(2));
+      setBleVelocity(currentV);
+      
+      // Salva il picco di velocità del sensore per questa ripetizione
+      if (currentV > currentMaxBleVelRef.current) {
+        currentMaxBleVelRef.current = currentV;
+      }
+    } else {
+      // Decadimento: se il bilanciere è fermo, la velocità torna a zero
+      bleVelocityRef.current *= 0.8; 
+      if (Math.abs(bleVelocityRef.current) < 0.1) {
+        bleVelocityRef.current = 0;
+        setBleVelocity(0);
+      }
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -96,7 +128,8 @@ export default function WorkoutCanvas() {
   const handleReset = () => {
     counterRef.current = 0;
     setCounter(0);
-    setVelocity(0);
+    setCamVelocity(0);
+    setBleVelocity(0);
     setRepHistory([]);
     setFailScreenshots([]);
     pathRef.current = [];
@@ -190,20 +223,25 @@ export default function WorkoutCanvas() {
                  if (stageRef.current === "up" && curAngle < 140) {
                     stageRef.current = "down";
                     hasReachedDepth.current = false;
-                    currentMaxVelRef.current = 0;
+                    currentMaxCamVelRef.current = 0;
+                    currentMaxBleVelRef.current = 0; // Reset memoria sensore
                     pathRef.current = [];
                  }
                  if (curAngle <= 90) hasReachedDepth.current = true;
-                 
                  skeletonColor = hasReachedDepth.current ? "#22c55e" : "#ef4444";
               }
+              
               if (curAngle > 160 && stageRef.current === "down") {
                 stageRef.current = "up";
                 if (hasReachedDepth.current) {
                   counterRef.current += 1;
                   setCounter(counterRef.current);
                   
-                  const peakV = Number(currentMaxVelRef.current.toFixed(2));
+                  // GOD MODE: Sceglie la velocità del Sensore se connesso, altrimenti usa la Cam
+                  const peakV = isBleConnected 
+                    ? Number(currentMaxBleVelRef.current.toFixed(2)) 
+                    : Number(currentMaxCamVelRef.current.toFixed(2));
+                    
                   setRepHistory(prev => {
                     const currentBest = prev.length > 0 ? Math.max(...prev.map(r => r.peakVelocity), peakV) : peakV;
                     const loss = peakV >= currentBest ? 0 : Math.round((1 - peakV / currentBest) * 100);
@@ -215,20 +253,26 @@ export default function WorkoutCanvas() {
                 }
               }
             } else {
+              // LOGICA DEADLIFT
               const kneeY = kY;
               const barY = isLeft ? side.w.y * canvasElement.height : side.w.y * canvasElement.height;
               const ankleY = aY;
 
               if (barY < kneeY && stageRef.current === "up") {
                 stageRef.current = "down";
-                currentMaxVelRef.current = 0;
+                currentMaxCamVelRef.current = 0;
+                currentMaxBleVelRef.current = 0;
                 pathRef.current = [];
               }
               if (barY > ankleY - 30 && stageRef.current === "down") {
                 stageRef.current = "up";
                 counterRef.current += 1;
                 setCounter(counterRef.current);
-                const peakV = Number(currentMaxVelRef.current.toFixed(2));
+                
+                const peakV = isBleConnected 
+                    ? Number(currentMaxBleVelRef.current.toFixed(2)) 
+                    : Number(currentMaxCamVelRef.current.toFixed(2));
+                    
                 setRepHistory(prev => {
                   const currentBest = prev.length > 0 ? Math.max(...prev.map(r => r.peakVelocity), peakV) : peakV;
                   const loss = peakV >= currentBest ? 0 : Math.round((1 - peakV / currentBest) * 100);
@@ -239,7 +283,7 @@ export default function WorkoutCanvas() {
             }
           }
 
-          // CALCOLO VELOCITÀ DA WEBCAM (Fallback/Confronto)
+          // CALCOLO VELOCITÀ DA WEBCAM (Gira sempre in background)
           const now = Date.now();
           const rawBarX = side.w.x * canvasElement.width;
           const rawBarY = side.s.y * canvasElement.height; 
@@ -253,8 +297,8 @@ export default function WorkoutCanvas() {
             const v = Math.abs(dy / dt);
             
             if (v < 5 && dt > 0.05) { 
-              setVelocity(Number(v.toFixed(2)));
-              if (v > currentMaxVelRef.current) currentMaxVelRef.current = v;
+              setCamVelocity(Number(v.toFixed(2)));
+              if (v > currentMaxCamVelRef.current) currentMaxCamVelRef.current = v;
             }
           }
           prevBarRef.current = { x: rawBarX, y: rawBarY, t: now };
@@ -299,7 +343,7 @@ export default function WorkoutCanvas() {
     };
     initPose();
     return () => { isActive = false; };
-  }, [exercise, sourceMode, videoSrc, videoKey]);
+  }, [exercise, sourceMode, videoSrc, videoKey, isBleConnected]);
 
   const generateChartPath = () => {
     if (repHistory.length < 2) return "";
@@ -317,19 +361,22 @@ export default function WorkoutCanvas() {
           <button onClick={() => {setExercise('DEADLIFT'); handleReset();}} className={`flex-1 py-2.5 rounded-xl font-bold transition-all ${exercise === 'DEADLIFT' ? 'bg-indigo-600 shadow-lg' : 'text-slate-500'}`}>DEADLIFT</button>
         </div>
 
-        {/* DASHBOARD CON DATI BLUETOOTH */}
+        {/* DASHBOARD CON PRIORITÀ AL DATO BLUETOOTH */}
         <div className="grid grid-cols-4 gap-4 w-full max-w-[720px] bg-slate-900 p-6 rounded-[2rem] border border-slate-800 shadow-2xl relative">
           <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-500 rounded-l-[2rem]"></div>
           <div className="text-center"><p className="text-[10px] text-slate-500 uppercase font-black">Reps</p><p className="text-5xl font-black">{counter}</p></div>
           
           <div className="text-center border-x border-slate-800 flex flex-col justify-center">
-            <p className="text-[10px] text-slate-500 uppercase font-black">m/s (Cam)</p>
-            <p className="text-5xl font-black text-green-400 tabular-nums">{velocity}</p>
-            {/* Dato live dal sensore hardware */}
+            <p className="text-[10px] text-slate-500 uppercase font-black">
+              {isBleConnected ? "m/s (SENSOR)" : "m/s (CAM)"}
+            </p>
+            <p className={`text-5xl font-black tabular-nums ${isBleConnected ? 'text-blue-400' : 'text-green-400'}`}>
+              {isBleConnected ? bleVelocity : camVelocity}
+            </p>
             {isBleConnected && (
               <div className="mt-1 flex items-center justify-center gap-1">
                 <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"></div>
-                <p className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">BLE: {bleAccel.toFixed(2)} g</p>
+                <p className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">{bleAccel.toFixed(2)} g</p>
               </div>
             )}
           </div>
@@ -376,7 +423,6 @@ export default function WorkoutCanvas() {
           </div>
         </div>
 
-        {/* COMANDI INFERIORI (Con Tasto Bluetooth) */}
         <div className="flex gap-4 w-full max-w-[720px]">
           <button 
             onClick={() => setSourceMode(prev => prev === 'WEBCAM' ? 'UPLOAD' : 'WEBCAM')} 
@@ -385,7 +431,6 @@ export default function WorkoutCanvas() {
             {sourceMode === 'WEBCAM' ? "USA VIDEO" : "USA WEBCAM"}
           </button>
           
-          {/* IL TASTO MAGICO BLUETOOTH */}
           <button 
             onClick={connectBluetooth} 
             className={`flex-1 py-4 font-bold rounded-2xl border text-xs tracking-widest uppercase transition-all shadow-lg flex items-center justify-center gap-2
@@ -393,18 +438,36 @@ export default function WorkoutCanvas() {
                 ? 'bg-blue-900/20 text-blue-400 border-blue-500/30 hover:bg-red-900/20 hover:text-red-400 hover:border-red-500/30' 
                 : 'bg-blue-600 text-white border-blue-500 hover:bg-blue-500'}`}
           >
-            {isBleConnected ? (
-              <><span>BLE ATTIVO</span></>
-            ) : (
-              "CONNETTI SENSORE"
-            )}
+            {isBleConnected ? "BLE ATTIVO" : "CONNETTI SENSORE"}
           </button>
 
           <button onClick={handleReset} className="flex-1 py-4 bg-slate-900 text-red-500 font-bold rounded-2xl border border-slate-800 text-xs tracking-widest uppercase hover:bg-red-950/20 transition-all">RESET</button>
         </div>
       </div>
       
-      {/* Log anomalie nascosto qui per brevità */}
+      {/* Log anomalie */}
+      <div className="w-full lg:w-80 bg-slate-900/50 rounded-[2.5rem] border border-slate-800 p-6 flex flex-col gap-4 shadow-2xl overflow-hidden">
+        <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500 mb-2 px-2">Anomalies Log</h3>
+        <div className="flex flex-col gap-4 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
+          {failScreenshots.length === 0 ? <p className="text-[10px] text-slate-600 italic px-2">Tutto regolare.</p> : 
+            failScreenshots.map((fail, i) => (
+              <div key={i} onClick={() => setSelectedImage(fail)} className="group relative rounded-2xl overflow-hidden border-2 border-red-500/30 cursor-pointer hover:border-red-500 transition-all shadow-lg transform hover:-translate-y-1">
+                <img src={fail.image} className="w-full h-auto opacity-70 group-hover:opacity-100" />
+                <div className="absolute bottom-0 left-0 right-0 bg-red-600/90 py-1.5 px-3 text-[9px] font-black uppercase tracking-widest flex justify-between">
+                  <span>Rep #{fail.repNumber}</span>
+                  <span>{fail.exercise}</span>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+
+      {selectedImage && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-10 backdrop-blur-sm" onClick={() => setSelectedImage(null)}>
+          <img src={selectedImage.image} className="max-w-full max-h-full rounded-[2.5rem] border-2 border-white/10 shadow-2xl" />
+        </div>
+      )}
     </div>
   );
 }
